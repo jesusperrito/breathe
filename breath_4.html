@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>breath</title>
+<!-- breath — a mildly upset experience, 2026 -->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000}
+canvas{display:block;cursor:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/* breath — a mildly upset experience */
+(function(){
+'use strict';
+
+// ── CANVAS ───────────────────────────────────────────────────────────
+const cv=document.getElementById('c');
+let W=cv.width=window.innerWidth, H=cv.height=window.innerHeight;
+const cx=cv.getContext('2d');
+
+// Offscreen canvas — all scene rendering happens here.
+// willReadFrequently: tells Chrome to keep pixels in CPU memory for fast getImageData.
+const oc=document.createElement('canvas');
+oc.width=W; oc.height=H;
+const dc=oc.getContext('2d',{willReadFrequently:true});
+
+window.addEventListener('resize',()=>{
+  W=cv.width=oc.width=window.innerWidth;
+  H=cv.height=oc.height=window.innerHeight;
+  buildStars();
+});
+
+// ── DISSOLVE DITHER ──────────────────────────────────────────────────
+// This IS Photoshop's Dissolve blend mode.
+// Every pixel's grey value (0-255) becomes its probability of being pure white.
+// Below the threshold → pure black. Above → pure white.
+// No grey values reach the screen — only pixel density encodes tone.
+// A large pre-computed Uint8Array is used instead of per-frame Math.random()
+// for performance. Offset shifts by a prime each frame → unique pattern each frame.
+const NL=1<<22; // 4,194,304 values (~4MB)
+const NM=NL-1;
+const NT=new Uint8Array(NL);
+for(let i=0;i<NL;i++) NT[i]=Math.random()*256|0;
+let NO=0;
+
+function dither(){
+  const id=dc.getImageData(0,0,W,H);
+  const d=id.data;
+  NO=(NO+1048583)&NM; // large prime step = unique pattern each frame
+  for(let i=0;i<d.length;i+=4){
+    // Fast Rec.601 integer luminance
+    const lum=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;
+    if(lum<=1){d[i]=d[i+1]=d[i+2]=0;d[i+3]=255;continue;}
+    const n=NT[(NO+(i>>>2))&NM];
+    if(n<lum){d[i]=d[i+1]=d[i+2]=255;}
+    else{d[i]=d[i+1]=d[i+2]=0;}
+    d[i+3]=255;
+  }
+  dc.putImageData(id,0,0);
+}
+
+// ── GLOW SPRITES ─────────────────────────────────────────────────────
+// Pre-rendered radial grey falloff canvases (no blur filter — just ImageData math).
+// Drawing these before the body means the body overwrites the center.
+// After dithering: body=dense white, halo=dissolving grain density at edge.
+// The sprite's grey values ARE the probability map for the dither.
+const GR=[8,16,28,46,72,110,162,220];
+const GS=GR.map(R=>{
+  const sz=R*2+2, g=document.createElement('canvas');
+  g.width=g.height=sz;
+  const gx=g.getContext('2d'), id=gx.createImageData(sz,sz);
+  const c0=R+0.5;
+  for(let py=0;py<sz;py++) for(let px=0;px<sz;px++){
+    const dx=px-c0,dy=py-c0,d=Math.sqrt(dx*dx+dy*dy);
+    if(d>=R) continue;
+    const t=1-d/R;
+    const i=(py*sz+px)*4;
+    id.data[i]=id.data[i+1]=id.data[i+2]=(Math.pow(t,1.2)*255)|0;
+    id.data[i+3]=255;
+  }
+  gx.putImageData(id,0,0); return g;
+});
+
+function gSprite(R){
+  let bi=0;
+  for(let i=1;i<GR.length;i++) if(Math.abs(GR[i]-R)<Math.abs(GR[bi]-R))bi=i;
+  return{sp:GS[bi],nr:GR[bi]};
+}
+
+function drawGlow(x,y,bR,lit){
+  if(lit<0.01||bR<3) return;
+  const glR=bR*2.0;
+  const{sp,nr}=gSprite(glR);
+  const sc=glR/nr, dw=sp.width*sc;
+  dc.save();dc.globalAlpha=lit;
+  dc.drawImage(sp,x-dw/2,y-dw/2,dw,dw);
+  dc.restore();
+}
+
+// ── STARS ────────────────────────────────────────────────────────────
+let stars=[];
+function buildStars(){
+  stars=Array.from({length:200},()=>({
+    x:Math.random()*W,y:Math.random()*H*0.68,
+    r:Math.random()<0.88?0.7:1.2+Math.random()*0.6,
+    ph:Math.random()*Math.PI*2,sp:0.3+Math.random()*1.6,br:0.2+Math.random()*0.7
+  }));
+}
+buildStars();
+
+// ── AUDIO ────────────────────────────────────────────────────────────
+// Ambient: Sigur Rós-inspired open-fifth drone + slow modal melody.
+// Hover: sustained sine voices, volume = proximity × lit × depth.
+let AC=null,_conv=null,ambReady=false;
+const hV=[];
+const NOTES=[130.81,146.83,164.81,195.99,220,261.63,293.66,329.63,392,440];
+
+function mkRev(){
+  const len=AC.sampleRate*8,buf=AC.createBuffer(2,len,AC.sampleRate);
+  for(let c=0;c<2;c++){const d=buf.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.3);}
+  const cv_=AC.createConvolver();cv_.buffer=buf;return cv_;
+}
+function initAudio(){
+  if(AC){if(AC.state==='suspended')AC.resume();return;}
+  AC=new(window.AudioContext||window.webkitAudioContext)();
+  if(AC.state==='suspended')AC.resume();
+  _conv=mkRev();
+  const wet=AC.createGain();wet.gain.value=0.20;_conv.connect(wet);wet.connect(AC.destination);
+  const dry=AC.createGain();dry.gain.value=0.025;dry.connect(AC.destination);
+  [[65.41,0.09],[97.99,0.08],[130.81,0.07],[195.99,0.055],[261.63,0.04]].forEach(([f,vol],i)=>{
+    [0,0.0015].forEach((det,j)=>{
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.type='sine';o.frequency.value=f*(1+det);o.connect(g);
+      g.connect(_conv);if(!j)g.connect(dry);
+      g.gain.setValueAtTime(0,AC.currentTime);
+      g.gain.linearRampToValueAtTime(vol*(j?0.4:1),AC.currentTime+5+i*1.8);
+      o.start();
+    });
+  });
+  const mel=[130.81,146.83,164.81,174.61,195.99,220,246.94,261.63,293.66];
+  let mi=0;
+  (function pm(){
+    if(!AC||AC.state!=='running'){setTimeout(pm,2000);return;}
+    if(Math.random()<0.28)mi++;
+    const f=mel[mi%mel.length];mi=(mi+1)%mel.length;
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.type='sine';o.frequency.value=f;o.connect(g);g.connect(_conv);
+    const t=AC.currentTime;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.048,t+2.4);g.gain.exponentialRampToValueAtTime(0.001,t+9);
+    o.start(t);o.stop(t+9.5);
+    setTimeout(pm,4500+Math.random()*6500);
+  });
+  setTimeout(()=>{
+    (function pm(){
+      if(!AC||AC.state!=='running'){setTimeout(pm,2000);return;}
+      if(Math.random()<0.28)mi++;
+      const f=mel[mi%mel.length];mi=(mi+1)%mel.length;
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.type='sine';o.frequency.value=f;o.connect(g);g.connect(_conv);
+      const t=AC.currentTime;
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.048,t+2.4);g.gain.exponentialRampToValueAtTime(0.001,t+9);
+      o.start(t);o.stop(t+9.5);
+      setTimeout(pm,4500+Math.random()*6500);
+    })();
+  },9000);
+  for(let i=0;i<4;i++){
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.type='sine';o.frequency.value=NOTES[i*2];
+    o.connect(g);g.connect(_conv);g.connect(dry);
+    g.gain.value=0;o.start();hV.push({o,g,aid:-1});
+  }
+  ambReady=true;
+}
+function setHover(cs){
+  if(!ambReady||!AC||AC.state!=='running')return;
+  hV.forEach((v,i)=>{
+    const c=cs[i];
+    if(c){v.o.frequency.setTargetAtTime(c.freq,AC.currentTime,0.22);v.g.gain.setTargetAtTime(c.vol,AC.currentTime,0.14);}
+    else{v.g.gain.setTargetAtTime(0,AC.currentTime,0.18);}
+  });
+}
+
+// ── INPUT ────────────────────────────────────────────────────────────
+let camZ=0,tCamZ=0,mouseX=W*.5,mouseY=H*.4;
+let lastScrollT=0,lastCursorT=0;
+const NEAR=65,FAR=2500,FOCAL=720,HRZ=0.44,CR=280;
+window.addEventListener('wheel',e=>{
+  e.preventDefault();tCamZ=Math.max(0,tCamZ+e.deltaY*0.62);
+  lastScrollT=lastCursorT=Date.now();initAudio();
+},{passive:false});
+window.addEventListener('mousemove',e=>{mouseX=e.clientX;mouseY=e.clientY;lastCursorT=Date.now();initAudio();});
+['click','touchstart'].forEach(ev=>window.addEventListener(ev,()=>initAudio(),{passive:true}));
+
+// ── LANTERN POOL ─────────────────────────────────────────────────────
+const TYPES=['cyl','globe','tear'];
+let pool=[],spawnQ=[],lid=0,genZ=3000;
+function mkL(wz){return{
+  id:lid++,wx:(Math.random()-.5)*620,wy:Math.random()*180-150,wz,
+  type:TYPES[Math.floor(Math.random()*3)],bs:28+Math.random()*52,
+  ph:Math.random()*Math.PI*2,bspd:0.00035+Math.random()*.0004,
+  lit:0.0,driftX:0,driftVX:0,dimmed:false,gone:false,
+  freq:NOTES[Math.floor(Math.random()*NOTES.length)],
+  _sx:null,_sy:null,_rz:FAR,
+};}
+function qSpawn(z0,z1){
+  const n=Math.round(10+(z1-z0)*.015);
+  Array.from({length:n},()=>z0+Math.random()*(z1-z0))
+    .sort((a,b)=>b-a).forEach(z=>spawnQ.push(z));
+}
+qSpawn(180,genZ);
+function proj(wx,wy,wz){
+  const rz=wz-camZ;if(rz<NEAR)return null;
+  const s=FOCAL/rz;return{sx:wx*s+W/2,sy:wy*s+H*HRZ,s,rz};
+}
+
+// ── DRAW HELPERS ─────────────────────────────────────────────────────
+// All fills use SOLID grey values (rgb, not rgba).
+// These grey values become pixel density probabilities in the dither pass.
+// Shadow side of a lantern = darker grey = fewer white pixels = perceived shadow.
+// No opacity compositing anywhere — everything is grey→dither→binary.
+
+const grey=(v,l)=>{const c=(255*l*v)|0;return`rgb(${c},${c},${c})`;};
+
+function rr(x,y,w,h,r){
+  dc.beginPath();
+  dc.moveTo(x+r,y);dc.lineTo(x+w-r,y);dc.arcTo(x+w,y,x+w,y+r,r);
+  dc.lineTo(x+w,y+h-r);dc.arcTo(x+w,y+h,x+w-r,y+h,r);
+  dc.lineTo(x+r,y+h);dc.arcTo(x,y+h,x,y+h-r,r);
+  dc.lineTo(x,y+r);dc.arcTo(x,y,x+r,y,r);dc.closePath();
+}
+
+// CYLINDER — cylindrical shading encoded as linear greyscale gradient.
+// Bright center-left (high grey→dense white pixels), dark right shadow (low grey→sparse).
+function drawCyl(x,y,w,h,lit){
+  if(w<4){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,w*.5,0,Math.PI*2);dc.fill();return;}
+  const r=Math.min(w,h)*.13;
+  const bg=dc.createLinearGradient(x-w/2,0,x+w/2,0);
+  bg.addColorStop(0,   grey(0.58,lit));
+  bg.addColorStop(0.25,grey(0.94,lit));
+  bg.addColorStop(0.52,grey(1.00,lit));
+  bg.addColorStop(0.76,grey(0.80,lit));
+  bg.addColorStop(1,   grey(0.40,lit));
+  dc.fillStyle=bg; rr(x-w/2,y-h/2,w,h,r); dc.fill();
+  // Caps: darker grey = fewer white pixels = visible as darker band
+  const ch=Math.max(1.5,h*.07);
+  dc.fillStyle=grey(0.20,lit);
+  dc.fillRect(x-w/2,y-h/2,w,ch); dc.fillRect(x-w/2,y+h/2-ch,w,ch);
+  // Ribs: thin, subtle
+  if(w>10){
+    dc.strokeStyle=grey(0.44,lit); dc.lineWidth=Math.max(0.3,w*.016);
+    for(let i=1;i<4;i++){dc.beginPath();dc.moveTo(x-w*.44,y-h/2+h*i/4);dc.lineTo(x+w*.44,y-h/2+h*i/4);dc.stroke();}
+  }
+  // Ring + string
+  if(w>14){
+    const rR=w*.2;
+    dc.strokeStyle=grey(0.62,lit); dc.lineWidth=Math.max(.5,w*.025);
+    dc.beginPath();dc.arc(x,y-h/2-rR*.5,rR,0,Math.PI*2);dc.stroke();
+    dc.strokeStyle=grey(0.42,lit); dc.lineWidth=Math.max(.3,w*.007);
+    dc.beginPath();dc.moveTo(x,y-h/2-rR);dc.lineTo(x,y-h/2-h*.55-rR);dc.stroke();
+  }
+}
+
+// GLOBE — spherical shading encoded as radial greyscale gradient.
+function drawGlobe(x,y,radius,lit){
+  if(radius<3){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,radius*.5,0,Math.PI*2);dc.fill();return;}
+  const sg=dc.createRadialGradient(x-radius*.18,y-radius*.15,0,x,y,radius);
+  sg.addColorStop(0,   grey(1.00,lit));
+  sg.addColorStop(0.48,grey(0.90,lit));
+  sg.addColorStop(0.76,grey(0.58,lit));
+  sg.addColorStop(1,   grey(0.22,lit));
+  dc.fillStyle=sg; dc.beginPath(); dc.arc(x,y,radius,0,Math.PI*2); dc.fill();
+  dc.fillStyle=grey(0.18,lit);
+  dc.beginPath();dc.arc(x,y-radius,radius*.22,0,Math.PI*2);dc.fill();
+  dc.beginPath();dc.arc(x,y+radius,radius*.14,0,Math.PI*2);dc.fill();
+  if(radius>9){
+    dc.strokeStyle=grey(0.42,lit); dc.lineWidth=Math.max(.3,radius*.009);
+    dc.beginPath();dc.moveTo(x,y-radius-radius*.22);dc.lineTo(x,y-radius*2.1);dc.stroke();
+  }
+}
+
+// TEARDROP — radial gradient centred on bright side.
+function drawTear(x,y,w,h,lit){
+  if(w<4){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,w*.5,0,Math.PI*2);dc.fill();return;}
+  const by=y-h/2;
+  function T(){
+    dc.beginPath();dc.moveTo(x,by+2);
+    dc.bezierCurveTo(x+w*.38,by+2,x+w/2,by+h*.28,x+w/2,by+h*.54);
+    dc.bezierCurveTo(x+w/2,by+h*.84,x+w*.28,by+h,x,by+h);
+    dc.bezierCurveTo(x-w*.28,by+h,x-w/2,by+h*.84,x-w/2,by+h*.54);
+    dc.bezierCurveTo(x-w/2,by+h*.28,x-w*.38,by+2,x,by+2);
+    dc.closePath();
+  }
+  const tg=dc.createRadialGradient(x-w*.15,y,0,x,y,Math.max(w,h)*.6);
+  tg.addColorStop(0,  grey(1.00,lit));
+  tg.addColorStop(0.55,grey(0.86,lit));
+  tg.addColorStop(1,  grey(0.36,lit));
+  dc.fillStyle=tg; T(); dc.fill();
+  dc.fillStyle=grey(0.18,lit);
+  dc.beginPath();dc.arc(x,by+2,w*.1,0,Math.PI*2);dc.fill();
+  if(w>9){
+    dc.strokeStyle=grey(0.42,lit); dc.lineWidth=Math.max(.3,w*.007);
+    dc.beginPath();dc.moveTo(x,by);dc.lineTo(x,by-h*.42);dc.stroke();
+  }
+}
+
+// ── WATER ────────────────────────────────────────────────────────────
+function drawWater(ts,vis){
+  const wy=H*.73;
+  const wg=dc.createLinearGradient(0,wy,0,H);
+  wg.addColorStop(0,'rgba(0,0,0,0)');wg.addColorStop(.16,'rgba(0,0,0,.96)');wg.addColorStop(1,'#000');
+  dc.fillStyle=wg;dc.fillRect(0,wy,W,H-wy);
+  for(let i=0;i<8;i++){
+    const ly=wy+4+i*8,a=.036-i*.004;if(a<.003)break;
+    dc.strokeStyle=`rgba(255,255,255,${a})`;dc.lineWidth=.35;
+    dc.beginPath();dc.moveTo(0,ly+Math.sin(ts*.00031+i)*1.6);
+    for(let wx=0;wx<=W;wx+=24)dc.lineTo(wx,ly+Math.sin(ts*.00031+wx*.035+i*.55)*2.4);
+    dc.stroke();
+  }
+  vis.forEach(({sx,sy,sw,lit})=>{
+    if(sy>wy-20||lit<.14)return;
+    const ry=wy+(wy-sy)*.1,rw=Math.min(sw*.46,46);
+    const rg=dc.createRadialGradient(sx,ry,0,sx,ry,rw*1.8);
+    rg.addColorStop(0,`rgba(255,255,255,${lit*.09})`);rg.addColorStop(1,'rgba(0,0,0,0)');
+    dc.fillStyle=rg;dc.fillRect(sx-rw*2,ry-rw*.6,rw*4,rw*1.2);
+  });
+}
+
+// ── CURSOR HALO ──────────────────────────────────────────────────────
+// Drawn on the MAIN canvas AFTER the dither — intentionally smooth,
+// signals cursor position against the grainy scene.
+function drawCursorHalo(ts){
+  const s=Date.now()-lastCursorT;if(s>4000)return;
+  const f=Math.max(0,1-s/3000),p=.72+.28*Math.sin(ts*.0038);
+  cx.save();cx.fillStyle='#fff';
+  cx.filter='blur(14px)';cx.globalAlpha=f*p*.42;
+  cx.beginPath();cx.arc(mouseX,mouseY,16,0,Math.PI*2);cx.fill();
+  cx.filter='blur(4px)';cx.globalAlpha=f*p*.65;
+  cx.beginPath();cx.arc(mouseX,mouseY,6,0,Math.PI*2);cx.fill();
+  cx.filter='none';cx.globalAlpha=f;
+  cx.beginPath();cx.arc(mouseX,mouseY,2,0,Math.PI*2);cx.fill();
+  cx.restore();
+}
+
+// ── MAIN LOOP ─────────────────────────────────────────────────────────
+let fc=0,prevT=0;
+function frame(ts){
+  const dt=Math.min(ts-(prevT||ts),50);prevT=ts;
+  camZ+=(tCamZ-camZ)*.074;
+  const now=Date.now(),scrollOn=(now-lastScrollT)<700,cursorOn=(now-lastCursorT)<2200;
+
+  if(camZ+2200>genZ){qSpawn(genZ,genZ+1400);genZ+=1400;}
+  for(let i=0;i<2&&spawnQ.length>0;i++)pool.push(mkL(spawnQ.pop()));
+  if(fc%300===0)pool=pool.filter(l=>!l.gone);
+
+  // ── Render to offscreen canvas ─────────────────────────────────────
+  dc.fillStyle='#000';dc.fillRect(0,0,W,H);
+
+  // Stars: varying brightness → varying density after dither
+  stars.forEach(s=>{
+    const a=s.br*(.42+.58*Math.sin(ts*s.sp*.001+s.ph));if(a<.04)return;
+    const v=(a*255)|0; dc.fillStyle=`rgb(${v},${v},${v})`;
+    dc.fillRect(s.x-s.r*.5,s.y-s.r*.5,s.r,s.r);
+  });
+
+  // Update lanterns
+  pool.forEach(l=>{
+    if(l.gone)return;
+    const rz=l.wz-camZ;
+    if(rz<-600){if(Math.random()<.003)l.gone=true;return;}
+    if(rz<=0)return;
+    const dx=(l._sx??W/2)-mouseX,dy=(l._sy??H*HRZ)-mouseY;
+    const prox=Math.max(0,1-Math.sqrt(dx*dx+dy*dy)/CR);
+    if(scrollOn||(cursorOn&&prox>0)){
+      const rate=scrollOn?0.001+0.002*Math.max(0,1-rz/1300):0.0008+0.0022*prox;
+      l.lit=Math.min(1,l.lit+dt*rate);
+      if(l.lit>0.22){l.driftVX=0;l.dimmed=false;}
+    }else{
+      const rate=0.00016+(rz/FAR)*.00048;
+      l.lit=Math.max(0,l.lit-dt*rate);
+      if(l.lit===0&&!l.dimmed){l.dimmed=true;l.driftVX=(Math.random()-.5)*.055;}
+    }
+    if(l.lit===0){l.driftX+=l.driftVX*dt;if(Math.abs(l.driftX)>95)l.gone=true;}
+    l._rz=rz;
+  });
+
+  // Project
+  const vis=[];
+  pool.forEach(l=>{
+    if(l.gone||l.lit<.005)return;
+    const bob=Math.sin(ts*l.bspd+l.ph)*7;
+    const p=proj(l.wx+l.driftX,l.wy+bob,l.wz);if(!p)return;
+    const sw=Math.min(l.bs*p.s,188),sh=sw*1.52,m=sw*5;
+    if(p.sx<-m||p.sx>W+m||p.sy<-sh*3||p.sy>H*.82)return;
+    l._sx=p.sx;l._sy=p.sy;l._rz=p.rz;
+    vis.push({l,sx:p.sx,sy:p.sy,sw,sh,rz:p.rz,lit:l.lit});
+  });
+  vis.sort((a,b)=>b.rz-a.rz);
+
+  // GLOW first (drawn before body so body overwrites center with full grey)
+  vis.forEach(({l,sx,sy,sw,sh,lit})=>{
+    const bR=l.type==='globe'?sw/2:Math.max(sw,sh)/2;
+    drawGlow(sx,sy,bR,lit);
+  });
+
+  // BODY (overwrites glow center — only halo remains from glow sprite)
+  vis.forEach(({l,sx,sy,sw,sh,lit})=>{
+    if(l.type==='globe')drawGlobe(sx,sy,sw/2,lit);
+    else if(l.type==='tear')drawTear(sx,sy,sw,sh,lit);
+    else drawCyl(sx,sy,sw,sh,lit);
+  });
+
+  // Water
+  drawWater(ts,vis);
+
+  // Vignette (included before dither so corners go pure black)
+  const vg=dc.createRadialGradient(W/2,H*.45,H*.05,W/2,H*.45,W*.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(.5,'rgba(0,0,0,.06)');vg.addColorStop(1,'rgba(0,0,0,.93)');
+  dc.fillStyle=vg;dc.fillRect(0,0,W,H);
+
+  // ── DITHER — converts ALL grey values to pure white/black pixels ───
+  dither();
+
+  // ── Blit to main canvas ────────────────────────────────────────────
+  cx.drawImage(oc,0,0);
+
+  // ── Hover audio ───────────────────────────────────────────────────
+  if(cursorOn){
+    const cs=vis.map(({l,sx,sy,rz,lit})=>{
+      const dx=sx-mouseX,dy=sy-mouseY,dist=Math.sqrt(dx*dx+dy*dy);
+      const prox=Math.max(0,1-dist/CR);
+      return{id:l.id,freq:l.freq*2,vol:prox*lit*(1-Math.min(1,rz/2200))*.07,prox,dist};
+    }).filter(c=>c.prox>0.03).sort((a,b)=>a.dist-b.dist);
+    setHover(cs);
+  }else setHover([]);
+
+  // ── Post-dither: cursor halo + watermark (smooth UI layer) ─────────
+  drawCursorHalo(ts);
+  cx.globalAlpha=.1;cx.fillStyle='#fff';cx.font='9px Georgia,serif';cx.textAlign='center';
+  cx.fillText('a mildly upset experience',W/2,H-14);
+  cx.globalAlpha=1;cx.textAlign='left';
+
+  fc++;requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
