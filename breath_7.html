@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>breathe</title>
+<!-- breathe — a mildly upset experience, 2026 -->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000}
+canvas{display:block;cursor:none}
+
+/* ── INTRO ─────────────────────────────────────────────────────────── */
+#intro{
+  position:fixed;inset:0;background:#000;z-index:100;
+  display:flex;align-items:center;justify-content:center;
+  transition:opacity 2.2s ease;
+}
+.it{text-align:center;font-family:Georgia,serif;color:#fff;user-select:none;}
+.it-title{
+  display:block;font-size:12px;letter-spacing:1.8em;text-transform:lowercase;
+  font-weight:400;margin-bottom:20px;
+  opacity:0;animation:fi 2s ease .6s forwards;
+}
+.it-rule{
+  display:block;width:22px;height:1px;
+  background:rgba(255,255,255,.22);margin:0 auto 28px;
+  opacity:0;animation:fi 2s ease 1.4s forwards;
+}
+.it-body{
+  display:block;font-size:11px;font-style:italic;
+  letter-spacing:.12em;line-height:2.5;
+  color:rgba(255,255,255,.58);margin-bottom:30px;
+  opacity:0;animation:fi 2s ease 2s forwards;
+}
+.it-hint{
+  display:block;font-size:9px;letter-spacing:.3em;text-transform:lowercase;
+  color:rgba(255,255,255,.28);margin-bottom:38px;
+  opacity:0;animation:fi 2s ease 3.2s forwards;
+}
+.it-action{
+  display:inline-block;font-size:8px;letter-spacing:.55em;text-transform:lowercase;
+  color:rgba(255,255,255,.35);border-bottom:1px solid rgba(255,255,255,.18);
+  padding-bottom:3px;cursor:pointer;
+  opacity:0;animation:fi 1.6s ease 4.8s forwards;
+  transition:color .35s,border-color .35s;
+}
+.it-action:hover{color:rgba(255,255,255,.82);border-bottom-color:rgba(255,255,255,.55);}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+
+/* ── WIND SLIDER ─────────────────────────────────────────────────────── */
+.wc{
+  position:fixed;bottom:18px;left:18px;z-index:10;
+  display:flex;align-items:center;gap:8px;
+  opacity:.11;transition:opacity .3s;cursor:auto;
+}
+.wc:hover{opacity:.6}
+.wc label{color:#fff;font:8px Georgia,serif;letter-spacing:.18em;text-transform:uppercase;cursor:default;}
+.wc input[type=range]{
+  -webkit-appearance:none;appearance:none;
+  width:68px;height:1px;background:rgba(255,255,255,.35);outline:none;cursor:pointer;
+}
+.wc input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:6px;height:6px;background:#fff;border-radius:50%;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="intro">
+  <div class="it">
+    <span class="it-title">breathe</span>
+    <span class="it-rule"></span>
+    <span class="it-body">nothing here<br>exists without you.</span>
+    <span class="it-hint">move to prove it.</span>
+    <span class="it-action" id="beginBtn">begin</span>
+  </div>
+</div>
+<div class="wc" id="windCtrl">
+  <label>wind</label>
+  <input type="range" id="wS" min="0" max="6" step=".1" value="2.2">
+</div>
+<script>
+/* breathe — a mildly upset experience */
+(function(){
+'use strict';
+
+// ── CANVAS ───────────────────────────────────────────────────────────
+const cv=document.getElementById('c');
+let W=cv.width=window.innerWidth, H=cv.height=window.innerHeight;
+const cx=cv.getContext('2d');
+const oc=document.createElement('canvas'); oc.width=W; oc.height=H;
+const dc=oc.getContext('2d',{willReadFrequently:true});
+window.addEventListener('resize',()=>{
+  W=cv.width=oc.width=window.innerWidth;
+  H=cv.height=oc.height=window.innerHeight;
+  buildStars();
+});
+
+// ── INTRO ────────────────────────────────────────────────────────────
+let introGone=false;
+function dismissIntro(){
+  if(introGone)return; introGone=true;
+  const el=document.getElementById('intro');
+  el.style.opacity='0'; setTimeout(()=>el?.remove(),2300);
+  initAudio();
+}
+document.getElementById('beginBtn').addEventListener('click',dismissIntro);
+window.addEventListener('wheel',dismissIntro,{passive:true,once:true});
+window.addEventListener('touchstart',dismissIntro,{passive:true,once:true});
+
+// ── SLIDER VISIBILITY (Shift+P) ─────────────────────────────────────
+let sliderVisible=true;
+window.addEventListener('keydown',e=>{
+  if(e.shiftKey&&e.key==='P'){
+    sliderVisible=!sliderVisible;
+    document.getElementById('windCtrl').style.display=sliderVisible?'flex':'none';
+  }
+  if(e.code==='Space'&&!e.repeat){spaceHeld=true;spaceStart=Date.now();e.preventDefault();}
+});
+window.addEventListener('keyup',e=>{
+  if(e.code==='Space'){spaceHeld=false;if(extinctMode)extinctMode=false;}
+});
+
+// ── STOCHASTIC DITHER (= Photoshop Dissolve) ──────────────────────────
+const NL=1<<22, NM=NL-1;
+const NT=new Uint8Array(NL);
+for(let i=0;i<NL;i++) NT[i]=Math.random()*256|0;
+let NO=0;
+function dither(){
+  const id=dc.getImageData(0,0,W,H), d=id.data;
+  NO=(NO+1048583)&NM;
+  for(let i=0;i<d.length;i+=4){
+    const lum=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;
+    if(lum<=1){d[i]=d[i+1]=d[i+2]=0;d[i+3]=255;continue;}
+    if(NT[(NO+(i>>>2))&NM]<lum){d[i]=d[i+1]=d[i+2]=255;}
+    else{d[i]=d[i+1]=d[i+2]=0;}
+    d[i+3]=255;
+  }
+  dc.putImageData(id,0,0);
+}
+
+// ── GLOW SPRITES — Gaussian falloff, reaches exactly 0 at boundary ───
+const GR=[10,18,30,50,78,118,170,240,320];
+const GS=GR.map(R=>{
+  const sz=R*2+2, g=document.createElement('canvas');
+  g.width=g.height=sz;
+  const gx=g.getContext('2d'), id=gx.createImageData(sz,sz);
+  const c0=R+0.5, fl=Math.exp(-3.4);
+  for(let py=0;py<sz;py++) for(let px=0;px<sz;px++){
+    const dx=px-c0, dy=py-c0, d=Math.sqrt(dx*dx+dy*dy);
+    if(d>=R) continue;
+    const gv=Math.exp(-3.4*(d/R)*(d/R));
+    const v=Math.max(0,(gv-fl)/(1-fl)*255)|0;
+    const i=(py*sz+px)*4;
+    id.data[i]=id.data[i+1]=id.data[i+2]=v; id.data[i+3]=255;
+  }
+  gx.putImageData(id,0,0); return g;
+});
+function gSpr(R){let b=0;for(let i=1;i<GR.length;i++)if(Math.abs(GR[i]-R)<Math.abs(GR[b]-R))b=i;return{sp:GS[b],nr:GR[b]};}
+// Additive blending: overlapping glows accumulate, no circular boundary
+function drawGlow(x,y,gW,gH,lit){
+  if(lit<0.01||Math.max(gW,gH)<4)return;
+  const{sp,nr}=gSpr(Math.max(gW,gH));
+  const sx=sp.width*gW/nr, sy=sp.width*gH/nr;
+  dc.save();dc.globalCompositeOperation='lighter';dc.globalAlpha=lit*.62;
+  dc.drawImage(sp,x-sx/2,y-sy/2,sx,sy);dc.restore();
+}
+
+// ── STARS ────────────────────────────────────────────────────────────
+let stars=[];
+function buildStars(){
+  stars=Array.from({length:200},()=>({
+    x:Math.random()*W,y:Math.random()*H*0.68,
+    r:Math.random()<0.88?0.7:1.2+Math.random()*0.6,
+    ph:Math.random()*Math.PI*2,sp:0.3+Math.random()*1.6,br:0.2+Math.random()*0.7
+  }));
+}
+buildStars();
+
+// ── AUDIO ────────────────────────────────────────────────────────────
+// Layers: sine drone (foundation) + triangle pads (body) + choir with vibrato
+// (warmth) + chord arpeggiation (musicality) + slow melody + bells + water + drops.
+// Breath swell LFO modulates reverb wet for organic dynamics.
+let AC=null,_conv=null,ambReady=false;
+const NOTES=[130.81,146.83,164.81,195.99,220,261.63,293.66,329.63,392,440];
+let lastLightPlayed=false;
+
+function mkRev(){
+  const len=AC.sampleRate*8, buf=AC.createBuffer(2,len,AC.sampleRate);
+  for(let c=0;c<2;c++){const d=buf.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.3);}
+  const v=AC.createConvolver();v.buffer=buf;return v;
+}
+function playAccent(freq){
+  if(!AC||AC.state!=='running')return;
+  try{const o=AC.createOscillator(),g=AC.createGain();o.type='sine';o.frequency.value=freq*4;o.connect(g);g.connect(_conv);const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.026,t+0.015);g.gain.exponentialRampToValueAtTime(0.001,t+0.7);o.start(t);o.stop(t+0.75);}catch(e){}
+}
+function playDrop(){
+  if(!AC||AC.state!=='running')return;
+  try{const o=AC.createOscillator(),g=AC.createGain();const f=700+Math.random()*1400;o.type='sine';o.frequency.value=f;o.connect(g);g.connect(_conv);const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.042,t+0.008);g.gain.exponentialRampToValueAtTime(0.001,t+0.38);o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*0.14,t+0.32);o.start(t);o.stop(t+0.45);}catch(e){}
+}
+function playLastLight(){
+  if(!AC||AC.state!=='running')return;
+  try{const o=AC.createOscillator(),g=AC.createGain();o.type='sine';o.frequency.value=523.25;o.connect(g);g.connect(_conv);const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.07,t+0.18);g.gain.exponentialRampToValueAtTime(0.001,t+6);o.start(t);o.stop(t+6.5);}catch(e){}
+}
+
+function initAudio(){
+  if(AC){if(AC.state==='suspended')AC.resume();return;}
+  AC=new(window.AudioContext||window.webkitAudioContext)();
+  if(AC.state==='suspended')AC.resume();
+  _conv=mkRev();
+  const wet=AC.createGain();wet.gain.value=0.22;_conv.connect(wet);wet.connect(AC.destination);
+  const dry=AC.createGain();dry.gain.value=0.024;dry.connect(AC.destination);
+
+  // LAYER 1: Open-fifth sine drone — foundation (C & G, two octaves)
+  [[65.41,0.082],[97.99,0.072],[130.81,0.062],[195.99,0.048],[261.63,0.036]].forEach(([f,vol],i)=>{
+    [0,0.0013].forEach((det,j)=>{
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.type='sine';o.frequency.value=f*(1+det);o.connect(g);g.connect(_conv);if(!j)g.connect(dry);
+      g.gain.setValueAtTime(0,AC.currentTime);g.gain.linearRampToValueAtTime(vol*(j?0.38:1),AC.currentTime+5+i*1.8);o.start();
+    });
+  });
+
+  // LAYER 2: Triangle pads one octave up — warm, woody body
+  [[130.82,0.036],[195.99,0.030],[261.63,0.024],[392,0.018]].forEach(([f,vol],i)=>{
+    const o=AC.createOscillator(),g=AC.createGain();o.type='triangle';o.frequency.value=f;o.connect(g);g.connect(_conv);
+    g.gain.setValueAtTime(0,AC.currentTime);g.gain.linearRampToValueAtTime(vol,AC.currentTime+8+i*2);o.start();
+  });
+
+  // LAYER 3: Choir/breath pads — detuned sines with slow vibrato
+  [[261.63,0.022],[392,0.018],[523.25,0.014]].forEach(([baseF,vol])=>{
+    for(let k=0;k<3;k++){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.type='sine';o.frequency.value=baseF*Math.pow(2,(k-1)*3/1200);
+      const vib=AC.createOscillator(),vibG=AC.createGain();
+      vib.frequency.value=0.18+k*0.05;vibG.gain.value=0.45;
+      vib.connect(vibG);vibG.connect(o.frequency);vib.start();
+      o.connect(g);g.connect(_conv);
+      g.gain.setValueAtTime(0,AC.currentTime);g.gain.linearRampToValueAtTime(vol/3,AC.currentTime+12+k*2.5);o.start();
+    }
+  });
+
+  // LAYER 4: Slow modal melody (bowed-string quality via triangle)
+  const mel=[130.81,146.83,164.81,174.61,195.99,220,246.94,261.63,293.66,329.63];let mi=0;
+  function pm(){
+    if(!AC||AC.state!=='running'){setTimeout(pm,2000);return;}
+    if(Math.random()<0.24)mi++;
+    const f=mel[mi%mel.length];mi=(mi+1)%mel.length;
+    const o=AC.createOscillator(),g=AC.createGain();o.type='triangle';o.frequency.value=f;o.connect(g);g.connect(_conv);
+    const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.040,t+2.4);g.gain.exponentialRampToValueAtTime(0.001,t+9);o.start(t);o.stop(t+9.5);
+    setTimeout(pm,3800+Math.random()*5200);
+  }
+  setTimeout(pm,5500);
+
+  // LAYER 5: Chord arpeggiation — plucked strings, musicality
+  const chord=[130.81,164.81,196,246.94,261.63];
+  function playArp(){
+    if(!AC||AC.state!=='running'){setTimeout(playArp,2000);return;}
+    const pick=chord.slice(0,2+Math.floor(Math.random()*3));
+    pick.forEach((f,i)=>setTimeout(()=>{
+      if(!ambReady)return;
+      const o=AC.createOscillator(),g=AC.createGain();o.type='triangle';o.frequency.value=f;o.connect(g);g.connect(_conv);
+      const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.033,t+0.018);g.gain.exponentialRampToValueAtTime(0.001,t+4.5);o.start(t);o.stop(t+5);
+    },i*175));
+    setTimeout(playArp,9000+Math.random()*8500);
+  }
+  setTimeout(playArp,14000);
+
+  // LAYER 6: Bell/piano — bright high plucks
+  const bells=[523.25,587.33,659.25,783.99,880,1046.5];
+  function playBell(){
+    if(!AC||AC.state!=='running')return;
+    const f=bells[Math.floor(Math.random()*bells.length)];
+    const o=AC.createOscillator(),g=AC.createGain();o.type='sine';o.frequency.value=f;o.connect(g);g.connect(_conv);
+    const t=AC.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.030,t+0.012);g.gain.exponentialRampToValueAtTime(0.001,t+3.2);o.start(t);o.stop(t+3.8);
+  }
+  (function bellLoop(){setTimeout(()=>{if(ambReady)playBell();bellLoop();},10000+Math.random()*14000);})();
+
+  // LAYER 7: Breath swell — slow LFO on reverb wet gain for organic pulse
+  const swellOsc=AC.createOscillator();swellOsc.type='sine';swellOsc.frequency.value=1/26;
+  const swellAmt=AC.createGain();swellAmt.gain.value=0.036;
+  swellOsc.connect(swellAmt);swellAmt.connect(wet.gain);swellOsc.start();
+
+  // LAYER 8: Sub-bass — felt more than heard
+  const sub=AC.createOscillator();sub.type='sine';sub.frequency.value=32.7;
+  const subG=AC.createGain();subG.gain.value=0;sub.connect(subG);subG.connect(dry);
+  subG.gain.linearRampToValueAtTime(0.028,AC.currentTime+10);sub.start();
+
+  // LAYER 9: Water ambiance noise
+  const bLen=AC.sampleRate*3,nBuf=AC.createBuffer(1,bLen,AC.sampleRate);
+  const nd=nBuf.getChannelData(0);for(let i=0;i<bLen;i++)nd[i]=Math.random()*2-1;
+  const nSrc=AC.createBufferSource();nSrc.buffer=nBuf;nSrc.loop=true;
+  const filt=AC.createBiquadFilter();filt.type='bandpass';filt.frequency.value=380;filt.Q.value=0.9;
+  const nG=AC.createGain();nG.gain.value=0;nSrc.connect(filt);filt.connect(nG);nG.connect(_conv);
+  nG.gain.linearRampToValueAtTime(0.018,AC.currentTime+4);nSrc.start();
+
+  // Droplets
+  (function drops(){setTimeout(()=>{if(ambReady)playDrop();drops();},6000+Math.random()*14000);})();
+
+  ambReady=true;
+}
+
+// ── INPUT ────────────────────────────────────────────────────────────
+let camZ=0,tCamZ=0,mouseX=W*.5,mouseY=H*.5;
+let prevMX=W*.5,prevMY=H*.5,mvX=0,mvY=0,mSpeed=0;
+let lastScrollT=0,lastCursorT=0,scrollVel=0;
+let extinctMode=false, spaceHeld=false, spaceStart=0;
+const NEAR=65,FAR=2500,FOCAL=720,HRZ=0.44,CR=160;
+const wSlider=document.getElementById('wS');
+let windMult=()=>parseFloat(wSlider.value);
+
+window.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const delta=Math.abs(e.deltaY);
+  scrollVel=delta;
+  tCamZ=Math.max(0,tCamZ+e.deltaY*0.34);
+  lastScrollT=lastCursorT=Date.now();
+  if(extinctMode)extinctMode=false;
+},{passive:false});
+window.addEventListener('mousemove',e=>{
+  mouseX=e.clientX;mouseY=e.clientY;
+  lastCursorT=Date.now();
+  if(extinctMode&&!spaceHeld)extinctMode=false;
+  initAudio();
+});
+window.addEventListener('click',e=>{
+  initAudio();dismissIntro();
+  // Eye zone → lights off
+  if(e.clientY<65&&Math.abs(e.clientX-W/2)<45&&eyeLit>0.2){extinctMode=true;return;}
+  // Lamp click → pendulum pull
+  let nearest=null,minD=75;
+  pool.forEach(l=>{
+    if(!l._sx||l.gone||l.lit<0.05)return;
+    const d=Math.sqrt((l._sx-e.clientX)**2+(l._sy-e.clientY)**2);
+    if(d<minD){minD=d;nearest=l;}
+  });
+  if(nearest)nearest.pendulumVY+=28;
+});
+['touchstart'].forEach(ev=>window.addEventListener(ev,()=>{initAudio();if(extinctMode&&!spaceHeld)extinctMode=false;},{passive:true}));
+
+// ── LANTERN POOL ─────────────────────────────────────────────────────
+const TYPES=['cyl','globe','tear'];
+let pool=[],spawnQ=[],lid=0,genZ=3000,spawnAcc=0;
+function mkL(wz){return{
+  id:lid++,wx:(Math.random()-.5)*620,wy:Math.random()*180-150,wz,
+  type:TYPES[Math.floor(Math.random()*3)],bs:28+Math.random()*52,
+  ph:Math.random()*Math.PI*2,bspd:0.00035+Math.random()*.0004,
+  lit:0.0,driftX:0,driftVX:0,dimmed:false,gone:false,hovered:false,
+  swing:0,swingV:0,pendulumY:0,pendulumVY:0,
+  freq:NOTES[Math.floor(Math.random()*NOTES.length)],_sx:null,_sy:null,_rz:FAR,
+};}
+function qSpawn(z0,z1){
+  const n=Math.round(5+(z1-z0)*.008);
+  Array.from({length:n},()=>z0+Math.random()*(z1-z0)).sort((a,b)=>b-a).forEach(z=>spawnQ.push(z));
+}
+qSpawn(180,genZ);
+function proj(wx,wy,wz){const rz=wz-camZ;if(rz<NEAR)return null;const s=FOCAL/rz;return{sx:wx*s+W/2,sy:wy*s+H*HRZ,s,rz};}
+
+// ── EYE STATE ────────────────────────────────────────────────────────
+let eyeLit=0,eyeOpen=1,eyeBlinking=false,eyeBlinkT=0,eyeNextBlink=3500+Math.random()*4000;
+
+// ── IDLE WHISPER ─────────────────────────────────────────────────────
+let idleEl=null,idleShown=false;
+function showIdleMsg(){
+  if(idleEl)return;
+  idleEl=document.createElement('div');
+  idleEl.textContent='you\'ve gone still.';
+  Object.assign(idleEl.style,{
+    position:'fixed',top:'32vh',left:'50%',transform:'translateX(-50%)',
+    color:'rgba(255,255,255,0.1)',font:'10px Georgia,serif',
+    letterSpacing:'.25em',pointerEvents:'none',
+    transition:'opacity 3.5s ease',opacity:'0',zIndex:'5',
+    textTransform:'lowercase',whiteSpace:'nowrap'
+  });
+  document.body.appendChild(idleEl);
+  requestAnimationFrame(()=>{if(idleEl)idleEl.style.opacity='1';});
+  setTimeout(()=>{if(idleEl){idleEl.style.opacity='0';setTimeout(()=>{idleEl?.remove();idleEl=null;},3600);}},9000);
+}
+function hideIdleMsg(){
+  if(idleEl){idleEl.style.opacity='0';setTimeout(()=>{idleEl?.remove();idleEl=null;},3600);}
+  idleShown=false;
+}
+
+// ── HELPERS ──────────────────────────────────────────────────────────
+const grey=(v,l)=>{const c=(255*l*v)|0;return`rgb(${c},${c},${c})`;};
+function rr(x,y,w,h,r){
+  dc.beginPath();dc.moveTo(x+r,y);dc.lineTo(x+w-r,y);dc.arcTo(x+w,y,x+w,y+r,r);
+  dc.lineTo(x+w,y+h-r);dc.arcTo(x+w,y+h,x+w-r,y+h,r);dc.lineTo(x+r,y+h);dc.arcTo(x,y+h,x,y+h-r,r);
+  dc.lineTo(x,y+r);dc.arcTo(x,y,x+r,y,r);dc.closePath();
+}
+
+// ── CYLINDER ─────────────────────────────────────────────────────────
+function drawCyl(x,y,w,h,lit){
+  if(w<4){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,w*.5,0,Math.PI*2);dc.fill();return;}
+  const bR=Math.min(w,h)*.22;
+  const bg=dc.createLinearGradient(x-w/2,0,x+w/2,0);
+  bg.addColorStop(0,grey(0.56,lit));bg.addColorStop(0.24,grey(0.93,lit));bg.addColorStop(0.52,grey(1,lit));bg.addColorStop(0.76,grey(0.79,lit));bg.addColorStop(1,grey(0.38,lit));
+  dc.fillStyle=bg;rr(x-w/2,y-h/2,w,h,bR);dc.fill();
+  const tcW=w*.64,tcH=Math.max(2.5,h*.065);dc.fillStyle=grey(0.22,lit);rr(x-tcW/2,y-h/2,tcW,tcH,2);dc.fill();
+  const bcW=w*.68,bcH=Math.max(2.5,h*.065);dc.fillStyle=grey(0.22,lit);rr(x-bcW/2,y+h/2-bcH,bcW,bcH,2);dc.fill();
+  if(w>9){dc.strokeStyle=grey(0.42,lit);dc.lineWidth=Math.max(0.28,w*.013);[1/3,2/3].forEach(t=>{dc.beginPath();dc.moveTo(x-w*.43,y-h/2+h*t);dc.lineTo(x+w*.43,y-h/2+h*t);dc.stroke();});}
+  if(w>13){const rR=w*.12,ringY=y-h/2-tcH-rR*.5;dc.strokeStyle=grey(0.52,lit);dc.lineWidth=Math.max(0.6,w*.022);dc.beginPath();dc.arc(x,ringY,rR,0,Math.PI*2);dc.stroke();dc.strokeStyle=grey(0.36,lit);dc.lineWidth=Math.max(0.28,w*.005);dc.beginPath();dc.moveTo(x,ringY-rR);dc.lineTo(x,y-h/2-h*.5-tcH-rR*2);dc.stroke();}
+  if(w>11){const tY=y+h/2+bcH,tLen=h*.14;dc.strokeStyle=grey(0.38,lit);dc.lineWidth=Math.max(0.28,w*.005);dc.beginPath();dc.moveTo(x,tY);dc.lineTo(x,tY+tLen*.5);dc.stroke();dc.fillStyle=grey(0.36,lit);dc.beginPath();dc.ellipse(x,tY+tLen*.5,Math.max(1,w*.038),Math.max(0.7,w*.026),0,0,Math.PI*2);dc.fill();if(w>18)for(let d=-1;d<=1;d+=2){dc.beginPath();dc.moveTo(x,tY+tLen*.5);dc.lineTo(x+d*w*.055,tY+tLen);dc.stroke();}}
+}
+function drawGlobe(x,y,radius,lit){
+  if(radius<3){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,radius*.5,0,Math.PI*2);dc.fill();return;}
+  const sg=dc.createRadialGradient(x-radius*.18,y-radius*.15,0,x,y,radius);
+  sg.addColorStop(0,grey(1,lit));sg.addColorStop(0.48,grey(0.90,lit));sg.addColorStop(0.76,grey(0.58,lit));sg.addColorStop(1,grey(0.22,lit));
+  dc.fillStyle=sg;dc.beginPath();dc.arc(x,y,radius,0,Math.PI*2);dc.fill();
+  dc.fillStyle=grey(0.18,lit);dc.beginPath();dc.arc(x,y-radius,radius*.21,0,Math.PI*2);dc.fill();dc.beginPath();dc.arc(x,y+radius,radius*.13,0,Math.PI*2);dc.fill();
+  if(radius>9){dc.strokeStyle=grey(0.40,lit);dc.lineWidth=Math.max(.28,radius*.009);dc.beginPath();dc.moveTo(x,y-radius-radius*.21);dc.lineTo(x,y-radius*2.0);dc.stroke();}
+}
+function drawTear(x,y,w,h,lit){
+  if(w<4){dc.fillStyle=grey(1,lit);dc.beginPath();dc.arc(x,y,w*.5,0,Math.PI*2);dc.fill();return;}
+  const by=y-h/2;
+  function T(){dc.beginPath();dc.moveTo(x,by+2);dc.bezierCurveTo(x+w*.38,by+2,x+w/2,by+h*.28,x+w/2,by+h*.54);dc.bezierCurveTo(x+w/2,by+h*.84,x+w*.28,by+h,x,by+h);dc.bezierCurveTo(x-w*.28,by+h,x-w/2,by+h*.84,x-w/2,by+h*.54);dc.bezierCurveTo(x-w/2,by+h*.28,x-w*.38,by+2,x,by+2);dc.closePath();}
+  const tg=dc.createRadialGradient(x-w*.15,y,0,x,y,Math.max(w,h)*.6);
+  tg.addColorStop(0,grey(1,lit));tg.addColorStop(0.55,grey(0.86,lit));tg.addColorStop(1,grey(0.36,lit));
+  dc.fillStyle=tg;T();dc.fill();
+  dc.fillStyle=grey(0.18,lit);dc.beginPath();dc.arc(x,by+2,w*.1,0,Math.PI*2);dc.fill();
+  if(w>9){dc.strokeStyle=grey(0.40,lit);dc.lineWidth=Math.max(.28,w*.007);dc.beginPath();dc.moveTo(x,by);dc.lineTo(x,by-h*.42);dc.stroke();}
+}
+
+// ── WATER ────────────────────────────────────────────────────────────
+function drawWater(ts,vis){
+  const wy=H*.73;
+  const wg=dc.createLinearGradient(0,wy,0,H);wg.addColorStop(0,'rgba(0,0,0,0)');wg.addColorStop(.15,'rgba(0,0,0,.95)');wg.addColorStop(1,'#000');
+  dc.fillStyle=wg;dc.fillRect(0,wy,W,H-wy);
+  for(let i=0;i<8;i++){const ly=wy+4+i*8,a=.032-i*.004;if(a<.003)break;dc.strokeStyle=`rgba(255,255,255,${a})`;dc.lineWidth=.33;dc.beginPath();dc.moveTo(0,ly+Math.sin(ts*.00031+i)*1.6);for(let wx=0;wx<=W;wx+=24)dc.lineTo(wx,ly+Math.sin(ts*.00031+wx*.035+i*.55)*2.4);dc.stroke();}
+  vis.forEach(({sx,sy,sw,lit})=>{
+    if(sy>wy-20||lit<.14)return;
+    const ry=wy+(wy-sy)*.09,rw=Math.min(sw*.36,36);
+    const{sp,nr}=gSpr(rw);const sc=rw/nr;
+    dc.save();dc.globalCompositeOperation='lighter';dc.globalAlpha=lit*.09;dc.drawImage(sp,sx-sp.width*sc*.9/2,ry-sp.width*sc*1.8/2,sp.width*sc*.9,sp.width*sc*1.8);dc.restore();
+  });
+}
+
+// ── EYES ─────────────────────────────────────────────────────────────
+const EW=20,EH=13,EGAP=10,EY=30;
+function drawEyes(){
+  if(eyeLit<0.01)return;
+  const ECX=W/2;
+  [-1,1].forEach(side=>{
+    const ex=ECX+side*(EGAP/2+EW/2),ey=EY,oh=EH*eyeOpen*Math.min(1,eyeLit*2);
+    if(oh<0.5)return;
+    dc.fillStyle=grey(0.92,eyeLit);dc.beginPath();dc.moveTo(ex-EW/2,ey);
+    dc.bezierCurveTo(ex-EW/3,ey-oh*.82,ex+EW/3,ey-oh*.82,ex+EW/2,ey);
+    dc.bezierCurveTo(ex+EW/3,ey+oh*.33,ex-EW/3,ey+oh*.33,ex-EW/2,ey);
+    dc.closePath();dc.fill();
+    const dxM=mouseX-ex,dyM=mouseY-ey,dm=Math.sqrt(dxM*dxM+dyM*dyM);
+    const maxOff=EW*.13,pFac=Math.min(1,dm/350);
+    const px=ex+(dm>0?dxM/dm:0)*maxOff*pFac,py=ey+(dm>0?dyM/dm:0)*maxOff*.42*pFac;
+    const pR=Math.min(oh*.36,EW*.21)*eyeOpen;
+    if(pR>0.4){dc.fillStyle=grey(0.06,eyeLit);dc.beginPath();dc.arc(px,py,pR,0,Math.PI*2);dc.fill();}
+  });
+}
+
+// ── CURSOR HALO + CHROMATIC ABERRATION ───────────────────────────────
+function drawCursorHalo(ts){
+  const s=Date.now()-lastCursorT;if(s>4000)return;
+  const f=Math.max(0,1-s/3000),p=.72+.28*Math.sin(ts*.0038);
+  cx.save();cx.fillStyle='#fff';
+  cx.filter='blur(14px)';cx.globalAlpha=f*p*.4;cx.beginPath();cx.arc(mouseX,mouseY,16,0,Math.PI*2);cx.fill();
+  cx.filter='blur(4px)';cx.globalAlpha=f*p*.62;cx.beginPath();cx.arc(mouseX,mouseY,6,0,Math.PI*2);cx.fill();
+  cx.filter='none';cx.globalAlpha=f;cx.beginPath();cx.arc(mouseX,mouseY,2,0,Math.PI*2);cx.fill();
+  const caAmt=Math.min(mSpeed*.34,13);
+  if(caAmt>2){
+    const ang=Math.atan2(mvY,mvX),cax=Math.cos(ang)*caAmt,cay=Math.sin(ang)*caAmt;
+    cx.globalCompositeOperation='screen';cx.filter='blur(8px)';
+    cx.fillStyle=`rgba(255,0,0,${f*.3})`;cx.beginPath();cx.arc(mouseX-cax,mouseY-cay,10,0,Math.PI*2);cx.fill();
+    cx.fillStyle=`rgba(0,255,140,${f*.2})`;cx.beginPath();cx.arc(mouseX,mouseY,10,0,Math.PI*2);cx.fill();
+    cx.fillStyle=`rgba(0,80,255,${f*.3})`;cx.beginPath();cx.arc(mouseX+cax,mouseY+cay,10,0,Math.PI*2);cx.fill();
+    cx.filter='none';cx.globalCompositeOperation='source-over';
+  }
+  cx.restore();
+}
+
+// ── MAIN LOOP ─────────────────────────────────────────────────────────
+let fc=0,prevT=0;
+function frame(ts){
+  const dt=Math.min(ts-(prevT||ts),50);prevT=ts;
+  camZ+=(tCamZ-camZ)*.04;
+  scrollVel*=0.86;
+  const now=Date.now(),scrollOn=(now-lastScrollT)<700,cursorOn=(now-lastCursorT)<2200;
+  const idleTime=now-Math.max(lastCursorT,lastScrollT);
+
+  mvX=(mouseX-prevMX)*.45+mvX*.55;mvY=(mouseY-prevMY)*.45+mvY*.55;
+  prevMX=mouseX;prevMY=mouseY;mSpeed=Math.sqrt(mvX*mvX+mvY*mvY);
+
+  // Idle whisper
+  if(idleTime>25000&&!idleShown){idleShown=true;showIdleMsg();}
+  if(idleTime<25000&&idleShown){hideIdleMsg();}
+
+  // Eye update
+  const eyeTarget=(cursorOn&&!extinctMode&&!spaceHeld)?1:0;
+  eyeLit+=(eyeTarget-eyeLit)*((eyeTarget>eyeLit)?dt*.007:dt*.0004);
+  eyeNextBlink-=dt;
+  if(eyeNextBlink<=0&&!eyeBlinking){eyeBlinking=true;eyeBlinkT=0;eyeNextBlink=2500+Math.random()*5000;}
+  if(eyeBlinking){eyeBlinkT+=dt;const ph=eyeBlinkT/220;if(ph<0.4)eyeOpen=1-ph/0.4;else if(ph<0.6)eyeOpen=0;else if(ph<1)eyeOpen=(ph-0.6)/0.4;else{eyeBlinking=false;eyeOpen=1;}}
+
+  if(camZ+2200>genZ){qSpawn(genZ,genZ+1400);genZ+=1400;}
+  // Spawn proportional to scroll speed — continuous, not batchy
+  spawnAcc+=scrollVel*.035+(scrollOn?.055:.010);
+  const toSpawn=Math.floor(spawnAcc);spawnAcc-=toSpawn;
+  for(let i=0;i<Math.min(toSpawn,2)&&spawnQ.length>0;i++)pool.push(mkL(spawnQ.pop()));
+  if(fc%300===0)pool=pool.filter(l=>!l.gone);
+  const wm=windMult();
+
+  // ── Render offscreen ──────────────────────────────────────────────
+  dc.fillStyle='#000';dc.fillRect(0,0,W,H);
+  stars.forEach(s=>{const a=s.br*(.42+.58*Math.sin(ts*s.sp*.001+s.ph));if(a<.04)return;const v=(a*255)|0;dc.fillStyle=`rgb(${v},${v},${v})`;dc.fillRect(s.x-s.r*.5,s.y-s.r*.5,s.r,s.r);});
+
+  pool.forEach(l=>{
+    if(l.gone)return;
+    const rz=l.wz-camZ;
+    if(rz<-600){if(Math.random()<.003)l.gone=true;return;}
+    if(rz<=0)return;
+    const dx=(l._sx??W/2)-mouseX,dy=(l._sy??H*HRZ)-mouseY;
+    const dist=Math.sqrt(dx*dx+dy*dy),prox=Math.max(0,1-dist/CR);
+    if(cursorOn&&prox>0.1&&l.lit>0.08&&!l.hovered){l.hovered=true;playAccent(l.freq);}
+    if(prox<0.05)l.hovered=false;
+    // Wind
+    if(cursorOn&&mSpeed>1.5&&dist<CR*.8){const windDir=mvX>=0?1:-1;l.swingV+=windDir*(mSpeed/18)*(1-dist/(CR*.8))*.0006*wm;}
+    l.swingV*=0.97;l.swing+=l.swingV;l.swing*=0.95;l.swing=Math.max(-0.22,Math.min(0.22,l.swing));
+    // Pendulum
+    l.pendulumVY+=-0.042*l.pendulumY;l.pendulumVY*=0.91;l.pendulumY+=l.pendulumVY;
+    if(Math.abs(l.pendulumY)<0.2&&Math.abs(l.pendulumVY)<0.1){l.pendulumY=0;l.pendulumVY=0;}
+    // Lit
+    if(extinctMode){
+      l.lit=Math.max(0,l.lit-dt*.00030);
+    }else if(spaceHeld&&Date.now()-spaceStart>1500){
+      // Hold breath — lanterns dim even when cursor moves
+      l.lit=Math.max(0,l.lit-dt*.00055);
+    }else if(scrollOn||(cursorOn&&prox>0)){
+      l.lit=Math.min(1,l.lit+dt*(scrollOn?0.001+0.002*Math.max(0,1-rz/1300):0.0008+0.0022*prox));
+      if(l.lit>0.22){l.driftVX=0;l.dimmed=false;}
+    }else{
+      l.lit=Math.max(0,l.lit-dt*(0.00016+(rz/FAR)*.00048));
+      if(l.lit===0&&!l.dimmed){l.dimmed=true;l.driftVX=(Math.random()-.5)*.055;}
+    }
+    if(l.lit===0){l.driftX+=l.driftVX*dt;if(Math.abs(l.driftX)>95)l.gone=true;}
+    l._rz=rz;
+  });
+
+  const vis=[];
+  pool.forEach(l=>{
+    if(l.gone||l.lit<.005)return;
+    const bob=Math.sin(ts*l.bspd+l.ph)*7;
+    const swX=Math.sin(l.swing)*20;
+    const p=proj(l.wx+l.driftX+swX,l.wy+bob+l.pendulumY,l.wz);if(!p)return;
+    const sw=Math.min(l.bs*p.s,188),sh=sw*1.52,m=sw*5;
+    if(p.sx<-m||p.sx>W+m||p.sy<-sh*3||p.sy>H*.82)return;
+    l._sx=p.sx;l._sy=p.sy;l._rz=p.rz;
+    vis.push({l,sx:p.sx,sy:p.sy,sw,sh,rz:p.rz,lit:l.lit});
+  });
+  vis.sort((a,b)=>b.rz-a.rz);
+
+  // Last light mechanic
+  const litLanterns=vis.filter(v=>v.lit>0.3);
+  if(litLanterns.length===1&&!lastLightPlayed){lastLightPlayed=true;playLastLight();}
+  if(litLanterns.length!==1)lastLightPlayed=false;
+
+  // GLOW — elliptical per type, Gaussian falloff, additive
+  vis.forEach(({l,sx,sy,sw,sh,lit})=>{
+    const isLast=litLanterns.length===1&&l===litLanterns[0]?.l;
+    const boost=isLast?1.6:1;
+    if(l.type==='globe')     drawGlow(sx,sy,sw*2.2*boost,sw*2.2*boost,lit);
+    else if(l.type==='cyl')  drawGlow(sx,sy,sw*1.9*boost,sh*1.4*boost,lit);
+    else                     drawGlow(sx,sy,sw*1.9*boost,sh*1.5*boost,lit);
+  });
+
+  vis.forEach(({l,sx,sy,sw,sh,lit})=>{
+    if(l.type==='globe')drawGlobe(sx,sy,sw/2,lit);
+    else if(l.type==='tear')drawTear(sx,sy,sw,sh,lit);
+    else drawCyl(sx,sy,sw,sh,lit);
+  });
+
+  drawEyes();
+  drawWater(ts,vis);
+
+  const vg=dc.createRadialGradient(W/2,H*.45,H*.05,W/2,H*.45,W*.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(.5,'rgba(0,0,0,.05)');vg.addColorStop(1,'rgba(0,0,0,.93)');
+  dc.fillStyle=vg;dc.fillRect(0,0,W,H);
+
+  dither();
+  cx.drawImage(oc,0,0);
+  drawCursorHalo(ts);
+
+  cx.globalAlpha=.08;cx.fillStyle='#fff';cx.font='8px Georgia,serif';cx.textAlign='center';
+  cx.fillText('breathe\u2009\u00b7\u2009a mildly upset experience',W/2,H-13);
+  cx.globalAlpha=1;cx.textAlign='left';
+
+  fc++;requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
